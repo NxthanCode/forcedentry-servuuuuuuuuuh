@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strings"
@@ -26,7 +25,6 @@ type Lobby struct {
 }
 
 func main() {
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -46,16 +44,14 @@ func main() {
 
 	listener, err := net.Listen("tcp", serverAddress)
 	if err != nil {
-		log.Fatal("Error starting server:", err)
+		fmt.Println("Error starting server:", err)
+		return
 	}
 	defer listener.Close()
 
 	fmt.Printf("Server listening on %s\n", serverAddress)
-	fmt.Printf("Players can connect to: YOUR_RENDER_URL.onrender.com:%s\n", port)
 
 	go cleanupConnections(lobby)
-
-	go startHealthCheckServer()
 
 	for {
 		conn, err := listener.Accept()
@@ -75,6 +71,31 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 		fmt.Println("Connection closed")
 	}()
 
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	reader := bufio.NewReader(conn)
+	firstMessage, err := reader.ReadString('\n')
+
+	if err != nil {
+
+		fmt.Println("Health check connection (timeout/error)")
+		return
+	}
+
+	conn.SetReadDeadline(time.Time{})
+
+	firstMessage = strings.TrimSpace(firstMessage)
+	fmt.Printf("First message: %s\n", firstMessage)
+
+	if strings.HasPrefix(firstMessage, "GET") || 
+	   strings.HasPrefix(firstMessage, "HEAD") || 
+	   strings.HasPrefix(firstMessage, "OPTIONS") ||
+	   strings.Contains(firstMessage, "HTTP/1.1") {
+
+		fmt.Println("Health check detected - sending OK and closing")
+		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		return
+	}
+
 	playerID := fmt.Sprintf("player_%d", time.Now().UnixNano())
 
 	player := &Player{
@@ -86,20 +107,22 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 		Username: fmt.Sprintf("Player%d", time.Now().Unix()%1000),
 	}
 
+	lobby.processFirstMessage(playerID, firstMessage, player)
+
 	lobby.mutex.Lock()
 	lobby.Players[playerID] = player
 	lobby.mutex.Unlock()
 
-	fmt.Printf("Player %s connected. Total players: %d\n", playerID, len(lobby.Players))
+	fmt.Printf("Real Unity Player %s connected. Total players: %d\n", playerID, len(lobby.Players))
 
-	welcomeMsg := fmt.Sprintf("server_info:Welcome to Render Server! Your ID: %s", playerID)
+	welcomeMsg := fmt.Sprintf("server_info:Welcome! Your ID: %s", playerID)
 	conn.Write([]byte(welcomeMsg + "\n"))
 
 	lobby.broadcast(fmt.Sprintf("player_joined:%s,%s", playerID, player.Username), playerID)
 
 	lobby.sendLobbyInfo(player)
 
-	scanner := bufio.NewScanner(conn)
+	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		message := strings.TrimSpace(scanner.Text())
 		player.LastSeen = time.Now()
@@ -119,6 +142,24 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 	fmt.Printf("Player %s disconnected. Remaining players: %d\n", playerID, len(lobby.Players))
 
 	lobby.broadcast(fmt.Sprintf("player_left:%s", playerID), "")
+}
+
+func (l *Lobby) processFirstMessage(playerID string, firstMessage string, player *Player) {
+	parts := strings.SplitN(firstMessage, ":", 2)
+	if len(parts) < 2 {
+		return
+	}
+
+	command := parts[0]
+	data := parts[1]
+
+	switch command {
+	case "join":
+		player.Username = data
+		fmt.Printf("Player %s set username: %s\n", playerID, data)
+	case "ping":
+
+	}
 }
 
 func (l *Lobby) processMessage(playerID string, message string) {
@@ -179,11 +220,6 @@ func (l *Lobby) broadcast(message string, excludePlayerID string) {
 			_, err := player.Conn.Write([]byte(message + "\n"))
 			if err != nil {
 				fmt.Printf("Error sending to player %s: %v\n", id, err)
-
-				go func(pid string) {
-					time.Sleep(100 * time.Millisecond)
-					player.Conn.Close()
-				}(id)
 			}
 		}
 	}
@@ -194,7 +230,7 @@ func (l *Lobby) sendLobbyInfo(player *Player) {
 	defer l.mutex.RUnlock()
 
 	playerCount := len(l.Players)
-	info := fmt.Sprintf("lobby_info:Connected to Render Server! Players online: %d", playerCount)
+	info := fmt.Sprintf("lobby_info:Connected! Players online: %d", playerCount)
 	player.Conn.Write([]byte(info + "\n"))
 
 	for id, otherPlayer := range l.Players {
@@ -232,29 +268,5 @@ func cleanupConnections(lobby *Lobby) {
 			fmt.Printf("Cleaned up %d inactive connections. Remaining: %d\n", removedCount, len(lobby.Players))
 		}
 		lobby.mutex.Unlock()
-	}
-}
-
-func startHealthCheckServer() {
-	healthPort := os.Getenv("HEALTH_PORT")
-	if healthPort == "" {
-		healthPort = "8081"
-	}
-
-	healthListener, err := net.Listen("tcp", "0.0.0.0:" + healthPort)
-	if err != nil {
-		fmt.Printf("Failed to start health check server: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Health check server on port %s\n", healthPort)
-
-	for {
-		conn, err := healthListener.Accept()
-		if err != nil {
-			continue
-		}
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\nServer is healthy"))
-		conn.Close()
 	}
 }
