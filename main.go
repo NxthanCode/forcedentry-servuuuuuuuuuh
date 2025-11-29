@@ -228,6 +228,8 @@ func (l *Lobby) processMessage(playerID string, message string) {
 
 		l.broadcast(fmt.Sprintf("chat:%s:%s", player.Username, data), playerID)
 		fmt.Printf("💬 Chat from %s: %s\n", player.Username, data)
+		fmt.Printf("💬 Chat from %s: %s\n", player.Username, data)
+		
 
 	case "ping":
 
