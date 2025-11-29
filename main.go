@@ -212,17 +212,33 @@ func (l *Lobby) processMessage(playerID string, message string) {
 }
 
 func (l *Lobby) broadcast(message string, excludePlayerID string) {
-	l.mutex.RLock()
-	defer l.mutex.RUnlock()
+    l.mutex.RLock()
+    defer l.mutex.RUnlock()
 
-	for id, player := range l.Players {
-		if id != excludePlayerID {
-			_, err := player.Conn.Write([]byte(message + "\n"))
-			if err != nil {
-				fmt.Printf("Error sending to player %s: %v\n", id, err)
-			}
-		}
-	}
+    for id, player := range l.Players {
+        if id != excludePlayerID {
+            // PRÜFE ob Verbindung noch lebt
+            if player.Conn == nil {
+                continue
+            }
+            
+            // Setze Schreib-Timeout
+            player.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+            
+            _, err := player.Conn.Write([]byte(message + "\n"))
+            if err != nil {
+                fmt.Printf("❌ Error sending to player %s: %v\n", id, err)
+                // Verbindung schließen
+                go func(pid string, p *Player) {
+                    time.Sleep(100 * time.Millisecond)
+                    p.Conn.Close()
+                }(id, player)
+            }
+            
+            // Timeout zurücksetzen
+            player.Conn.SetWriteDeadline(time.Time{})
+        }
+    }
 }
 
 func (l *Lobby) sendLobbyInfo(player *Player) {
