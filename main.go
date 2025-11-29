@@ -36,7 +36,7 @@ func main() {
 	}
 
 	serverAddress := fmt.Sprintf("%s:%s", host, port)
-	fmt.Printf("Starting Unity Multiplayer Server on %s\n", serverAddress)
+	fmt.Printf("🚀 Starting Unity Multiplayer Server on %s\n", serverAddress)
 
 	lobby := &Lobby{
 		Players: make(map[string]*Player),
@@ -44,57 +44,81 @@ func main() {
 
 	listener, err := net.Listen("tcp", serverAddress)
 	if err != nil {
-		fmt.Println("Error starting server:", err)
+		fmt.Println("❌ Error starting server:", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Printf("Server listening on %s\n", serverAddress)
+	fmt.Printf("✅ Server listening on %s\n", serverAddress)
+	fmt.Printf("📡 Players can connect to: YOUR_APP.onrender.com:%s\n", port)
 
 	go cleanupConnections(lobby)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Connection error:", err)
+			fmt.Println("❌ Connection error:", err)
 			continue
 		}
 
-		fmt.Printf("New connection from: %s\n", conn.RemoteAddr())
-		go handleConnection(conn, lobby)
+		remoteAddr := conn.RemoteAddr().String()
+		if isHealthCheckIP(remoteAddr) {
+			fmt.Printf("🏥 Health check from: %s\n", remoteAddr)
+			go handleHealthCheck(conn)
+			continue
+		}
+
+		fmt.Printf("🎮 Real player connection from: %s\n", remoteAddr)
+		go handlePlayerConnection(conn, lobby)
 	}
 }
 
-func handleConnection(conn net.Conn, lobby *Lobby) {
-	defer func() {
-		conn.Close()
-		fmt.Println("Connection closed")
-	}()
+func isHealthCheckIP(remoteAddr string) bool {
 
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	healthCheckIPs := []string{
+		"10.216.26.",    
+		"10.216.",       
+		"172.17.",       
+		"127.0.0.1",     
+		"::1",           
+	}
+
+	for _, ipPrefix := range healthCheckIPs {
+		if strings.HasPrefix(remoteAddr, ipPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func handleHealthCheck(conn net.Conn) {
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+
 	reader := bufio.NewReader(conn)
-	firstMessage, err := reader.ReadString('\n')
+	firstLine, err := reader.ReadString('\n')
 
 	if err != nil {
 
-		fmt.Println("Health check connection (timeout/error)")
 		return
 	}
 
-	conn.SetReadDeadline(time.Time{})
+	if strings.Contains(firstLine, "HTTP/1.1") || strings.Contains(firstLine, "GET") || strings.Contains(firstLine, "HEAD") {
 
-	firstMessage = strings.TrimSpace(firstMessage)
-	fmt.Printf("First message: %s\n", firstMessage)
+		response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
+		conn.Write([]byte(response))
+	} else {
 
-	if strings.HasPrefix(firstMessage, "GET") || 
-	   strings.HasPrefix(firstMessage, "HEAD") || 
-	   strings.HasPrefix(firstMessage, "OPTIONS") ||
-	   strings.Contains(firstMessage, "HTTP/1.1") {
-
-		fmt.Println("Health check detected - sending OK and closing")
-		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
+}
+
+func handlePlayerConnection(conn net.Conn, lobby *Lobby) {
+	defer func() {
+		conn.Close()
+		fmt.Println("🔌 Player connection closed")
+	}()
 
 	playerID := fmt.Sprintf("player_%d", time.Now().UnixNano())
 
@@ -107,13 +131,11 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 		Username: fmt.Sprintf("Player%d", time.Now().Unix()%1000),
 	}
 
-	lobby.processFirstMessage(playerID, firstMessage, player)
-
 	lobby.mutex.Lock()
 	lobby.Players[playerID] = player
 	lobby.mutex.Unlock()
 
-	fmt.Printf("Real Unity Player %s connected. Total players: %d\n", playerID, len(lobby.Players))
+	fmt.Printf("✅ Player %s connected. Total players: %d\n", playerID, len(lobby.Players))
 
 	welcomeMsg := fmt.Sprintf("server_info:Welcome! Your ID: %s", playerID)
 	conn.Write([]byte(welcomeMsg + "\n"))
@@ -122,7 +144,7 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 
 	lobby.sendLobbyInfo(player)
 
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		message := strings.TrimSpace(scanner.Text())
 		player.LastSeen = time.Now()
@@ -131,7 +153,7 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 			continue
 		}
 
-		fmt.Printf("Received from %s: %s\n", playerID, message)
+		fmt.Printf("📨 Received from %s: %s\n", playerID, message)
 		lobby.processMessage(playerID, message)
 	}
 
@@ -139,27 +161,9 @@ func handleConnection(conn net.Conn, lobby *Lobby) {
 	delete(lobby.Players, playerID)
 	lobby.mutex.Unlock()
 
-	fmt.Printf("Player %s disconnected. Remaining players: %d\n", playerID, len(lobby.Players))
+	fmt.Printf("👋 Player %s disconnected. Remaining players: %d\n", playerID, len(lobby.Players))
 
 	lobby.broadcast(fmt.Sprintf("player_left:%s", playerID), "")
-}
-
-func (l *Lobby) processFirstMessage(playerID string, firstMessage string, player *Player) {
-	parts := strings.SplitN(firstMessage, ":", 2)
-	if len(parts) < 2 {
-		return
-	}
-
-	command := parts[0]
-	data := parts[1]
-
-	switch command {
-	case "join":
-		player.Username = data
-		fmt.Printf("Player %s set username: %s\n", playerID, data)
-	case "ping":
-
-	}
 }
 
 func (l *Lobby) processMessage(playerID string, message string) {
@@ -182,7 +186,7 @@ func (l *Lobby) processMessage(playerID string, message string) {
 	switch command {
 	case "join":
 		player.Username = data
-		fmt.Printf("Player %s set username: %s\n", playerID, data)
+		fmt.Printf("🎯 Player %s set username: %s\n", playerID, data)
 		l.broadcast(fmt.Sprintf("lobby_info:Player %s joined the game", data), playerID)
 
 	case "position":
@@ -198,12 +202,12 @@ func (l *Lobby) processMessage(playerID string, message string) {
 	case "shoot":
 
 		l.broadcast(fmt.Sprintf("shoot:%s,%s", playerID, data), playerID)
-		fmt.Printf("Player %s shot: %s\n", playerID, data)
+		fmt.Printf("🔫 Player %s shot: %s\n", playerID, data)
 
 	case "chat":
 
 		l.broadcast(fmt.Sprintf("chat:%s:%s", player.Username, data), playerID)
-		fmt.Printf("Chat from %s: %s\n", player.Username, data)
+		fmt.Printf("💬 Chat from %s: %s\n", player.Username, data)
 
 	case "ping":
 
@@ -212,33 +216,17 @@ func (l *Lobby) processMessage(playerID string, message string) {
 }
 
 func (l *Lobby) broadcast(message string, excludePlayerID string) {
-    l.mutex.RLock()
-    defer l.mutex.RUnlock()
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
 
-    for id, player := range l.Players {
-        if id != excludePlayerID {
-            // PRÜFE ob Verbindung noch lebt
-            if player.Conn == nil {
-                continue
-            }
-            
-            // Setze Schreib-Timeout
-            player.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-            
-            _, err := player.Conn.Write([]byte(message + "\n"))
-            if err != nil {
-                fmt.Printf("❌ Error sending to player %s: %v\n", id, err)
-                // Verbindung schließen
-                go func(pid string, p *Player) {
-                    time.Sleep(100 * time.Millisecond)
-                    p.Conn.Close()
-                }(id, player)
-            }
-            
-            // Timeout zurücksetzen
-            player.Conn.SetWriteDeadline(time.Time{})
-        }
-    }
+	for id, player := range l.Players {
+		if id != excludePlayerID {
+			_, err := player.Conn.Write([]byte(message + "\n"))
+			if err != nil {
+				fmt.Printf("❌ Error sending to player %s: %v\n", id, err)
+			}
+		}
+	}
 }
 
 func (l *Lobby) sendLobbyInfo(player *Player) {
@@ -273,7 +261,7 @@ func cleanupConnections(lobby *Lobby) {
 
 		for id, player := range lobby.Players {
 			if now.Sub(player.LastSeen) > time.Minute {
-				fmt.Printf("Removing inactive player: %s\n", id)
+				fmt.Printf("🧹 Removing inactive player: %s\n", id)
 				player.Conn.Close()
 				delete(lobby.Players, id)
 				removedCount++
@@ -281,7 +269,7 @@ func cleanupConnections(lobby *Lobby) {
 		}
 
 		if removedCount > 0 {
-			fmt.Printf("Cleaned up %d inactive connections. Remaining: %d\n", removedCount, len(lobby.Players))
+			fmt.Printf("🧹 Cleaned up %d inactive connections. Remaining: %d\n", removedCount, len(lobby.Players))
 		}
 		lobby.mutex.Unlock()
 	}
